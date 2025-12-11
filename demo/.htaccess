@@ -1,0 +1,15 @@
+# Protect configuration file
+<Files "config.php">
+    Order Allow,Deny
+    Deny from all
+</Files>
+
+# Enable error reporting (disable in production)
+php_flag display_errors on
+php_value error_reporting E_ALL
+
+# Disable directory browsing
+Options -Indexes
+
+# Set default charset
+AddDefaultCharset UTF-8

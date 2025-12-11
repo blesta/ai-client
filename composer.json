@@ -1,0 +1,18 @@
+{
+    "name": "blesta/ai-client",
+    "description": "PHP client library for interacting with Blesta AI API",
+    "type": "library",
+    "keywords": ["blesta", "ai", "openrouter", "chat", "api", "client"],
+    "license": "MIT",
+    "require": {
+        "php": "^8.1",
+        "guzzlehttp/guzzle": "^7.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "BlestaAi\\Client\\": "src/"
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}

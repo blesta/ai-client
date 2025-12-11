@@ -1,0 +1,22 @@
+# IDE
+/nbproject/
+/.idea/
+/.vscode/
+*.swp
+*.swo
+*~
+
+# Dependencies
+/vendor/
+
+# Environment
+.env
+.env.local
+*.local.json
+
+# Demo config (users should copy config.example.php to config.php)
+/demo/config.php
+
+# OS
+.DS_Store
+Thumbs.db
