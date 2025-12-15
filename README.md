@@ -6,7 +6,8 @@ A modern PHP 8.1+ client library for interacting with the Blesta AI API (ai.bles
 
 - **Modern PHP 8.1+**: Uses typed properties, readonly classes, and named arguments
 - **Streaming Support**: Real-time Server-Sent Events (SSE) streaming for chat completions
-- **Comprehensive Error Handling**: Specific exception types for different error scenarios
+- **Rate Limit Monitoring**: Automatic extraction and exposure of rate limit information
+- **Comprehensive Error Handling**: Specific exception types for different error scenarios (including rate limits)
 - **PSR-4 Compliant**: Follows PHP-FIG standards with proper autoloading
 - **Well Documented**: Extensive PHPDoc comments and usage examples
 - **Guzzle HTTP Client**: Robust HTTP handling with built-in retry logic
@@ -55,6 +56,11 @@ $response = $client->chatCompletion('openai/gpt-4', [
 echo $response->getContent();
 echo "Cost: $" . $response->usage->cost;
 echo "Balance: $" . $response->usage->remainingBalance;
+
+// Check rate limit status
+if ($response->rateLimit) {
+    echo "Rate limit: {$response->rateLimit->remaining}/{$response->rateLimit->limit}";
+}
 ```
 
 ## Usage Examples
@@ -165,6 +171,7 @@ The library provides specific exception types for different error scenarios:
 ```php
 use BlestaAi\Client\Exceptions\AuthenticationException;
 use BlestaAi\Client\Exceptions\InsufficientCreditsException;
+use BlestaAi\Client\Exceptions\RateLimitException;
 use BlestaAi\Client\Exceptions\ValidationException;
 use BlestaAi\Client\Exceptions\BlestaAiException;
 
@@ -173,21 +180,96 @@ try {
         ['role' => 'user', 'content' => 'Hello!']
     ]);
 } catch (AuthenticationException $e) {
-    // Invalid or missing API key
+    // Invalid or missing API key (401)
     echo "Authentication failed: {$e->getMessage()}";
 } catch (InsufficientCreditsException $e) {
-    // Not enough credits
+    // Not enough credits (402)
     echo "Insufficient credits!";
     echo "Required: $" . $e->required;
     echo "Available: $" . $e->available;
+} catch (RateLimitException $e) {
+    // Rate limit exceeded (429)
+    echo "Rate limit exceeded!";
+    echo "Retry after: {$e->getRetryAfter()} seconds";
+    echo "Reset at: " . date('Y-m-d H:i:s', $e->getResetAt());
 } catch (ValidationException $e) {
-    // Invalid request parameters
+    // Invalid request parameters (422)
     echo "Validation errors: " . json_encode($e->getErrors());
 } catch (BlestaAiException $e) {
     // General API error
     echo "API error: {$e->getMessage()} (Code: {$e->getCode()})";
 }
 ```
+
+## Rate Limiting
+
+The Blesta AI API implements rate limiting to ensure fair usage. The client library automatically extracts and exposes rate limit information from API responses.
+
+### Monitoring Rate Limits
+
+Every successful API response includes rate limit information (when rate limiting is enabled):
+
+```php
+$response = $client->chatCompletion('openai/gpt-4', [
+    ['role' => 'user', 'content' => 'Hello!']
+]);
+
+// Check if rate limiting is enabled
+if ($response->rateLimit !== null) {
+    echo "Limit: {$response->rateLimit->limit} requests\n";
+    echo "Remaining: {$response->rateLimit->remaining} requests\n";
+    echo "Resets in: {$response->rateLimit->getSecondsUntilReset()} seconds\n";
+
+    // Check if approaching limit
+    if ($response->rateLimit->isNearLimit(0.2)) {
+        echo "⚠️ WARNING: Approaching rate limit (below 20%)!\n";
+    }
+}
+```
+
+### Handling Rate Limit Errors
+
+When you exceed the rate limit, a `RateLimitException` is thrown:
+
+```php
+use BlestaAi\Client\Exceptions\RateLimitException;
+
+try {
+    $response = $client->chatCompletion('openai/gpt-4', [
+        ['role' => 'user', 'content' => 'Hello!']
+    ]);
+} catch (RateLimitException $e) {
+    // Rate limit exceeded - wait and retry
+    $retryAfter = $e->getRetryAfter();
+
+    echo "Rate limit exceeded!\n";
+    echo "Waiting {$retryAfter} seconds before retrying...\n";
+
+    sleep($retryAfter + 1);  // Wait + 1 second buffer
+
+    // Retry the request...
+}
+```
+
+### Rate Limit Properties
+
+The `RateLimit` object provides:
+
+- **`limit`** (int): Maximum requests allowed per window
+- **`remaining`** (int): Requests remaining in current window
+- **`reset`** (int): Unix timestamp when the limit resets
+- **`getSecondsUntilReset()`**: Seconds until reset
+- **`isNearLimit(float $threshold)`**: Check if approaching limit (e.g., 0.1 = 10% remaining)
+
+### Best Practices
+
+1. **Check Rate Limits Proactively**: Monitor `remaining` requests and implement backoff before hitting the limit
+2. **Handle RateLimitException**: Always catch and handle rate limit errors gracefully
+3. **Respect Retry-After**: Use the `retryAfter` value from the exception, don't guess
+4. **Implement Exponential Backoff**: For repeated failures, increase wait time exponentially
+5. **Use Light Endpoints**: Check rate limits with lightweight endpoints like `getModels()` or `getCredits()`
+
+See `examples/rate_limit_test.php` for a complete example.
 
 ## API Reference
 
