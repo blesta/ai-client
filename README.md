@@ -222,7 +222,7 @@ if ($response->rateLimit !== null) {
 
     // Check if approaching limit
     if ($response->rateLimit->isNearLimit(0.2)) {
-        echo "⚠️ WARNING: Approaching rate limit (below 20%)!\n";
+        echo "WARNING: Approaching rate limit (below 20%)!\n";
     }
 }
 ```
