@@ -67,7 +67,8 @@ class BlestaAiClient
      *
      * @param string $model Model identifier (e.g., "openai/gpt-4", "anthropic/claude-3-sonnet")
      * @param array<int, array<string, string>> $messages Array of message objects with 'role' and 'content'
-     * @param array<string, mixed> $options Optional parameters (temperature, max_tokens, etc.)
+     * @param array<string, mixed> $options Optional parameters (temperature, max_tokens, timeout, etc.)
+     *                                      The 'timeout' key sets a per-request timeout in seconds (overrides constructor default)
      * @return ChatCompletion
      * @throws AuthenticationException
      * @throws InsufficientCreditsException
@@ -100,6 +101,13 @@ class BlestaAiClient
      */
     public function chatCompletion(string $model, array $messages, array $options = []): ChatCompletion
     {
+        // Extract Guzzle request options (not part of the API payload)
+        $requestOptions = [];
+        if (isset($options['timeout'])) {
+            $requestOptions['timeout'] = $options['timeout'];
+            unset($options['timeout']);
+        }
+
         $payload = array_merge([
             'model' => $model,
             'messages' => $messages,
@@ -107,9 +115,10 @@ class BlestaAiClient
         ], $options);
 
         try {
-            $response = $this->httpClient->post('chat/completions', [
-                'json' => $payload,
-            ]);
+            $response = $this->httpClient->post('chat/completions', array_merge(
+                ['json' => $payload],
+                $requestOptions
+            ));
 
             $data = json_decode($response->getBody()->getContents(), true);
             $headers = $response->getHeaders();
@@ -135,7 +144,8 @@ class BlestaAiClient
      * @param string $model Model identifier
      * @param array<int, array<string, string>> $messages Array of message objects
      * @param callable $callback Function to call for each chunk: function(string $chunk, ?array $data): void
-     * @param array<string, mixed> $options Optional parameters
+     * @param array<string, mixed> $options Optional parameters (temperature, max_tokens, timeout, etc.)
+     *                                      The 'timeout' key sets a per-request timeout in seconds (overrides constructor default)
      * @return void
      * @throws AuthenticationException
      * @throws InsufficientCreditsException
@@ -166,6 +176,13 @@ class BlestaAiClient
         callable $callback,
         array $options = []
     ): void {
+        // Extract Guzzle request options (not part of the API payload)
+        $requestOptions = [];
+        if (isset($options['timeout'])) {
+            $requestOptions['timeout'] = $options['timeout'];
+            unset($options['timeout']);
+        }
+
         $payload = array_merge([
             'model' => $model,
             'messages' => $messages,
@@ -173,10 +190,10 @@ class BlestaAiClient
         ], $options);
 
         try {
-            $response = $this->httpClient->post('chat/completions', [
-                'json' => $payload,
-                'stream' => true,
-            ]);
+            $response = $this->httpClient->post('chat/completions', array_merge(
+                ['json' => $payload, 'stream' => true],
+                $requestOptions
+            ));
 
             $body = $response->getBody();
 
