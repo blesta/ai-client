@@ -1,10 +1,10 @@
 # Blesta AI PHP Client Library
 
-A modern PHP 8.1+ client library for interacting with the Blesta AI API (ai.blesta.com). This library provides a simple, intuitive interface for chat completions, streaming responses, model listings, and credit balance management.
+A modern PHP 8.2+ client library for interacting with the Blesta AI API (ai.blesta.com). This library provides a simple, intuitive interface for chat completions, streaming responses, model listings, and credit balance management.
 
 ## Features
 
-- **Modern PHP 8.1+**: Uses typed properties, readonly classes, and named arguments
+- **Modern PHP 8.2+**: Uses typed properties, readonly classes, and named arguments
 - **Streaming Support**: Real-time Server-Sent Events (SSE) streaming for chat completions
 - **Rate Limit Monitoring**: Automatic extraction and exposure of rate limit information
 - **Comprehensive Error Handling**: Specific exception types for different error scenarios (including rate limits)
@@ -14,7 +14,7 @@ A modern PHP 8.1+ client library for interacting with the Blesta AI API (ai.bles
 
 ## Requirements
 
-- PHP 8.1 or higher
+- PHP 8.2 or higher
 - Composer
 - Guzzle HTTP client (^7.0)
 
