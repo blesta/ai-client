@@ -19,7 +19,7 @@ $apiKey = 'sk_your_api_key_here';
 // $client = new BlestaAiClient($apiKey, 'http://localhost:3030/api/v1');
 
 // For production
-$client = new BlestaAiClient($apiKey);
+// $client = new BlestaAiClient($apiKey);
 
 try {
     // Disable output buffering for true streaming
@@ -45,7 +45,7 @@ try {
 
     // Stream the response - using a prompt that generates a longer response
     $client->streamChatCompletion(
-        'openai/gpt-4',
+        'openai/gpt-4.1-mini',
         [
             ['role' => 'system', 'content' => 'You are a knowledgeable science educator.'],
             ['role' => 'user', 'content' => 'Explain how black holes form and what happens at the event horizon. Please provide a detailed explanation.']

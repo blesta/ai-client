@@ -5,6 +5,7 @@ namespace BlestaAi\Client;
 use BlestaAi\Client\Exceptions\AuthenticationException;
 use BlestaAi\Client\Exceptions\BlestaAiException;
 use BlestaAi\Client\Exceptions\InsufficientCreditsException;
+use BlestaAi\Client\Exceptions\RateLimitException;
 use BlestaAi\Client\Exceptions\ValidationException;
 use BlestaAi\Client\Models\ChatCompletion;
 use BlestaAi\Client\Models\Model;
@@ -66,10 +67,12 @@ class BlestaAiClient
      *
      * @param string $model Model identifier (e.g., "openai/gpt-4", "anthropic/claude-3-sonnet")
      * @param array<int, array<string, string>> $messages Array of message objects with 'role' and 'content'
-     * @param array<string, mixed> $options Optional parameters (temperature, max_tokens, etc.)
+     * @param array<string, mixed> $options Optional parameters (temperature, max_tokens, timeout, etc.)
+     *                                      The 'timeout' key sets a per-request timeout in seconds (overrides constructor default)
      * @return ChatCompletion
      * @throws AuthenticationException
      * @throws InsufficientCreditsException
+     * @throws RateLimitException
      * @throws ValidationException
      * @throws BlestaAiException
      *
@@ -86,10 +89,25 @@ class BlestaAiClient
      * echo $response->getContent();
      * echo "Cost: $" . $response->usage->cost;
      * echo "Balance: $" . $response->usage->remainingBalance;
+     *
+     * // Check rate limit status
+     * if ($response->rateLimit !== null) {
+     *     echo "Rate limit: {$response->rateLimit->remaining}/{$response->rateLimit->limit}\n";
+     *     if ($response->rateLimit->isNearLimit(0.2)) {
+     *         echo "Warning: Approaching rate limit!\n";
+     *     }
+     * }
      * ```
      */
     public function chatCompletion(string $model, array $messages, array $options = []): ChatCompletion
     {
+        // Extract Guzzle request options (not part of the API payload)
+        $requestOptions = [];
+        if (isset($options['timeout'])) {
+            $requestOptions['timeout'] = $options['timeout'];
+            unset($options['timeout']);
+        }
+
         $payload = array_merge([
             'model' => $model,
             'messages' => $messages,
@@ -97,13 +115,15 @@ class BlestaAiClient
         ], $options);
 
         try {
-            $response = $this->httpClient->post('chat/completions', [
-                'json' => $payload,
-            ]);
+            $response = $this->httpClient->post('chat/completions', array_merge(
+                ['json' => $payload],
+                $requestOptions
+            ));
 
             $data = json_decode($response->getBody()->getContents(), true);
+            $headers = $response->getHeaders();
 
-            return ChatCompletion::fromArray($data);
+            return ChatCompletion::fromArray($data, $headers);
         } catch (ClientException $e) {
             $this->handleClientException($e);
         } catch (GuzzleException $e) {
@@ -124,10 +144,12 @@ class BlestaAiClient
      * @param string $model Model identifier
      * @param array<int, array<string, string>> $messages Array of message objects
      * @param callable $callback Function to call for each chunk: function(string $chunk, ?array $data): void
-     * @param array<string, mixed> $options Optional parameters
+     * @param array<string, mixed> $options Optional parameters (temperature, max_tokens, timeout, etc.)
+     *                                      The 'timeout' key sets a per-request timeout in seconds (overrides constructor default)
      * @return void
      * @throws AuthenticationException
      * @throws InsufficientCreditsException
+     * @throws RateLimitException
      * @throws ValidationException
      * @throws BlestaAiException
      *
@@ -154,6 +176,13 @@ class BlestaAiClient
         callable $callback,
         array $options = []
     ): void {
+        // Extract Guzzle request options (not part of the API payload)
+        $requestOptions = [];
+        if (isset($options['timeout'])) {
+            $requestOptions['timeout'] = $options['timeout'];
+            unset($options['timeout']);
+        }
+
         $payload = array_merge([
             'model' => $model,
             'messages' => $messages,
@@ -161,10 +190,10 @@ class BlestaAiClient
         ], $options);
 
         try {
-            $response = $this->httpClient->post('chat/completions', [
-                'json' => $payload,
-                'stream' => true,
-            ]);
+            $response = $this->httpClient->post('chat/completions', array_merge(
+                ['json' => $payload, 'stream' => true],
+                $requestOptions
+            ));
 
             $body = $response->getBody();
 
@@ -202,6 +231,7 @@ class BlestaAiClient
      * Get list of available models with pricing.
      *
      * @return array<int, Model>
+     * @throws RateLimitException
      * @throws BlestaAiException
      *
      * @example
@@ -241,6 +271,7 @@ class BlestaAiClient
      *
      * @return float
      * @throws AuthenticationException
+     * @throws RateLimitException
      * @throws BlestaAiException
      *
      * @example
@@ -274,6 +305,7 @@ class BlestaAiClient
      * @return never
      * @throws AuthenticationException
      * @throws InsufficientCreditsException
+     * @throws RateLimitException
      * @throws ValidationException
      * @throws BlestaAiException
      */
@@ -282,6 +314,7 @@ class BlestaAiClient
         $response = $e->getResponse();
         $statusCode = $response->getStatusCode();
         $body = json_decode($response->getBody()->getContents(), true);
+        $headers = $response->getHeaders();
 
         $message = $body['message'] ?? $body['error'] ?? 'API request failed';
 
@@ -300,6 +333,19 @@ class BlestaAiClient
             case 422:
                 throw new ValidationException(
                     errors: $body['messages'] ?? [],
+                    message: $message,
+                    code: $statusCode
+                );
+
+            case 429:
+                $limit = (int)($headers['X-RateLimit-Limit'][0] ?? 0);
+                $retryAfter = (int)($body['retry_after'] ?? $headers['Retry-After'][0] ?? 60);
+                $reset = (int)($headers['X-RateLimit-Reset'][0] ?? time() + $retryAfter);
+
+                throw new RateLimitException(
+                    limit: $limit,
+                    retryAfter: $retryAfter,
+                    resetAt: $reset,
                     message: $message,
                     code: $statusCode
                 );
