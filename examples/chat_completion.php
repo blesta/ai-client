@@ -12,6 +12,7 @@ require_once __DIR__ . '/../vendor/autoload.php';
 use BlestaAi\Client\BlestaAiClient;
 use BlestaAi\Client\Exceptions\AuthenticationException;
 use BlestaAi\Client\Exceptions\InsufficientCreditsException;
+use BlestaAi\Client\Exceptions\RateLimitException;
 use BlestaAi\Client\Exceptions\BlestaAiException;
 
 // Replace with your actual API key
@@ -21,13 +22,13 @@ $apiKey = 'sk_your_api_key_here';
 // $client = new BlestaAiClient($apiKey, 'http://localhost:3030/api/v1');
 
 // For production
-$client = new BlestaAiClient($apiKey);
+// $client = new BlestaAiClient($apiKey);
 
 try {
     echo "Sending chat completion request...\n\n";
 
     // Simple conversation
-    $response = $client->chatCompletion('openai/gpt-4', [
+    $response = $client->chatCompletion('openai/gpt-4.1-mini', [
         ['role' => 'system', 'content' => 'You are a helpful assistant.'],
         ['role' => 'user', 'content' => 'What is the capital of France?']
     ]);
@@ -46,6 +47,18 @@ try {
     echo "- Remaining balance: $" . number_format($response->usage->remainingBalance, 4) . "\n";
     echo "- Finish reason: {$response->getFinishReason()}\n";
 
+    // Display rate limit information (if available)
+    if ($response->rateLimit !== null) {
+        echo "\nRate Limit Information:\n";
+        echo "- Limit: {$response->rateLimit->limit} requests\n";
+        echo "- Remaining: {$response->rateLimit->remaining} requests\n";
+        echo "- Resets in: {$response->rateLimit->getSecondsUntilReset()} seconds\n";
+
+        if ($response->rateLimit->isNearLimit(0.2)) {
+            echo "WARNING: Approaching rate limit (below 20% remaining)!\n";
+        }
+    }
+
 } catch (AuthenticationException $e) {
     echo "Authentication failed: {$e->getMessage()}\n";
     echo "Please check your API key.\n";
@@ -53,6 +66,12 @@ try {
     echo "Insufficient credits: {$e->getMessage()}\n";
     echo "Required: $" . number_format($e->required, 4) . "\n";
     echo "Available: $" . number_format($e->available, 4) . "\n";
+} catch (RateLimitException $e) {
+    echo "Rate limit exceeded: {$e->getMessage()}\n";
+    echo "- Limit: {$e->getLimit()} requests\n";
+    echo "- Retry after: {$e->getRetryAfter()} seconds\n";
+    echo "- Resets at: " . date('Y-m-d H:i:s', $e->getResetAt()) . "\n";
+    echo "\nPlease wait before making more requests.\n";
 } catch (BlestaAiException $e) {
     echo "API error: {$e->getMessage()}\n";
     echo "Code: {$e->getCode()}\n";
