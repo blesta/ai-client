@@ -8,6 +8,7 @@ use BlestaAi\Client\Exceptions\InsufficientCreditsException;
 use BlestaAi\Client\Exceptions\RateLimitException;
 use BlestaAi\Client\Exceptions\ValidationException;
 use BlestaAi\Client\Models\ChatCompletion;
+use BlestaAi\Client\Models\EmbeddingResponse;
 use BlestaAi\Client\Models\Model;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\ClientException;
@@ -18,7 +19,7 @@ use GuzzleHttp\Exception\GuzzleException;
  *
  * PHP client library for interacting with the Blesta AI API (ai.blesta.com).
  * This client provides methods for chat completions, streaming responses,
- * model listings, and credit balance checks.
+ * embeddings, model listings, and credit balance checks.
  *
  * @example
  * ```php
@@ -34,6 +35,12 @@ use GuzzleHttp\Exception\GuzzleException;
  */
 class BlestaAiClient
 {
+    /**
+     * Default per-request timeout (seconds) for embeddings() when the caller
+     * passes no 'timeout'. The server waits up to 90 s for the upstream.
+     */
+    public const DEFAULT_EMBEDDINGS_TIMEOUT = 120;
+
     private Client $httpClient;
 
     /**
@@ -228,10 +235,137 @@ class BlestaAiClient
     }
 
     /**
+     * Create embeddings (vectors) for one or more strings.
+     *
+     * The model must be a concrete embedding model (see getModels('embedding'));
+     * "blesta/*" aliases are rejected by the server. The response always reports
+     * the concrete model and the actual vector length: store both with your
+     * vectors, since vectors from different models or dimensions are not comparable.
+     *
+     * The response is checked strictly before it is returned (a
+     * BlestaAiException is thrown otherwise): one vector per input (1 for a
+     * string input), the response model exactly equal to the requested model,
+     * every vector non-empty and of the same length (see
+     * EmbeddingResponse::fromArray()), and, when 'dimensions' was passed,
+     * getDimensions() equal to the requested dimensions.
+     *
+     * Timeout: unless you pass 'timeout', this request uses a 120 second
+     * timeout (DEFAULT_EMBEDDINGS_TIMEOUT) instead of the constructor's
+     * default, because the server waits up to 90 seconds for the upstream
+     * provider on large batches.
+     *
+     * @param string $model Embedding model identifier (e.g., "openai/text-embedding-3-small")
+     * @param string|array<int, string> $inputs A string or a list of 1-64 non-empty strings
+     * @param array<string, mixed> $options Optional:
+     *                                      - 'dimensions' (int) reduced vector length, if the model supports it
+     *                                      - 'input_type' (string) "query" or "document"; reserved: accepted by
+     *                                        the server but currently ignored (not sent upstream)
+     *                                      - 'timeout' (int|float) per-request timeout in seconds (not sent to
+     *                                        the API); defaults to 120
+     * @return EmbeddingResponse
+     * @throws AuthenticationException
+     * @throws InsufficientCreditsException
+     * @throws RateLimitException
+     * @throws ValidationException
+     * @throws BlestaAiException
+     *
+     * @example
+     * ```php
+     * $result = $client->embeddings('openai/text-embedding-3-small', [
+     *     'How do I reset my password?',
+     *     'Refund policy for annual plans',
+     * ], [
+     *     'dimensions' => 512,
+     * ]);
+     *
+     * echo $result->getModel() . ' / ' . $result->getDimensions() . " dims\n";
+     * foreach ($result->getEmbeddings() as $index => $vector) {
+     *     // store $vector with $result->getModel() and $result->getDimensions()
+     * }
+     * echo "Cost: $" . $result->getUsage()->cost;
+     * ```
+     */
+    public function embeddings(string $model, string|array $inputs, array $options = []): EmbeddingResponse
+    {
+        // Extract Guzzle request options (not part of the API payload). The
+        // server may wait up to 90 s upstream, so default to a longer timeout
+        // than the constructor's.
+        $requestOptions = ['timeout' => self::DEFAULT_EMBEDDINGS_TIMEOUT];
+        if (isset($options['timeout'])) {
+            $requestOptions['timeout'] = $options['timeout'];
+        }
+        unset($options['timeout']);
+
+        $expectedCount = is_string($inputs) ? 1 : count($inputs);
+
+        $payload = array_merge([
+            'model' => $model,
+            'input' => $inputs,
+        ], $options);
+
+        try {
+            $response = $this->httpClient->post('embeddings', array_merge(
+                ['json' => $payload],
+                $requestOptions
+            ));
+
+            $data = json_decode($response->getBody()->getContents(), true);
+
+            if (!is_array($data)) {
+                throw new BlestaAiException('Malformed embeddings response: body is not JSON');
+            }
+
+            $result = EmbeddingResponse::fromArray($data, $response->getHeaders());
+
+            $received = count($result->getEmbeddings());
+            if ($received !== $expectedCount) {
+                throw new BlestaAiException(
+                    'Malformed embeddings response: expected ' . $expectedCount
+                    . ' vectors, received ' . $received
+                );
+            }
+
+            // The server always echoes the requested concrete model.
+            if ($result->getModel() !== $model) {
+                throw new BlestaAiException(
+                    'Malformed embeddings response: requested model "' . $model
+                    . '" but the response is for "' . $result->getModel() . '"'
+                );
+            }
+
+            // A reduced length was requested: vectors of any other length
+            // (e.g. the model's native size) must never reach the caller's index.
+            if (isset($options['dimensions'])
+                && $result->getDimensions() !== (int)$options['dimensions']) {
+                throw new BlestaAiException(
+                    'Malformed embeddings response: requested ' . (int)$options['dimensions']
+                    . ' dimensions but received ' . $result->getDimensions()
+                );
+            }
+
+            return $result;
+        } catch (ClientException $e) {
+            $this->handleClientException($e);
+        } catch (GuzzleException $e) {
+            throw new BlestaAiException(
+                'HTTP request failed: ' . $e->getMessage(),
+                $e->getCode(),
+                $e
+            );
+        }
+    }
+
+    /**
      * Get list of available models with pricing.
      *
+     * By default the server lists chat models (and Blesta model aliases) only.
+     * Pass a type to filter: 'embedding' for embedding models, 'all' for
+     * everything, or 'chat' for chat models.
+     *
+     * @param string|null $type Optional model type filter ('chat', 'embedding' or 'all')
      * @return array<int, Model>
      * @throws RateLimitException
+     * @throws ValidationException If the type is not recognized by the server
      * @throws BlestaAiException
      *
      * @example
@@ -243,12 +377,20 @@ class BlestaAiClient
      *     echo "Prompt: $" . $model->promptPrice . ", ";
      *     echo "Completion: $" . $model->completionPrice . "\n";
      * }
+     *
+     * // Embedding models, with dimensions and the recommended flag
+     * foreach ($client->getModels('embedding') as $model) {
+     *     echo $model->id . ' (' . $model->dimensions . ' dims)'
+     *         . ($model->recommended ? ' [recommended]' : '') . "\n";
+     * }
      * ```
      */
-    public function getModels(): array
+    public function getModels(?string $type = null): array
     {
         try {
-            $response = $this->httpClient->get('models');
+            $response = $type === null
+                ? $this->httpClient->get('models')
+                : $this->httpClient->get('models', ['query' => ['type' => $type]]);
             $data = json_decode($response->getBody()->getContents(), true);
 
             return array_map(
