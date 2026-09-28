@@ -1,11 +1,13 @@
 # Blesta AI PHP Client Library
 
-A modern PHP 8.2+ client library for interacting with the Blesta AI API (ai.blesta.com). This library provides a simple, intuitive interface for chat completions, streaming responses, model listings, and credit balance management.
+A modern PHP 8.2+ client library for interacting with the Blesta AI API (ai.blesta.com). This library provides a simple, intuitive interface for chat completions, streaming responses, embeddings, model listings, and credit balance management.
 
 ## Features
 
 - **Modern PHP 8.2+**: Uses typed properties, readonly classes, and named arguments
 - **Streaming Support**: Real-time Server-Sent Events (SSE) streaming for chat completions
+- **Tool/Function Calling**: Full support for OpenAI-compatible tool calling for autonomous AI actions
+- **Embeddings**: Turn text into vectors for semantic search / RAG (since 1.1.0)
 - **Rate Limit Monitoring**: Automatic extraction and exposure of rate limit information
 - **Comprehensive Error Handling**: Specific exception types for different error scenarios (including rate limits)
 - **PSR-4 Compliant**: Follows PHP-FIG standards with proper autoloading
@@ -31,7 +33,7 @@ Or add to your `composer.json`:
 ```json
 {
     "require": {
-        "blesta/ai-client": "^1.0"
+        "blesta/ai-client": "^1.1"
     }
 }
 ```
@@ -132,6 +134,59 @@ foreach ($models as $model) {
 }
 ```
 
+Prices include markup and are exactly the rate you are billed at, with up to 8 decimal places
+(e.g. `0.00002500`); format them with 8 decimals if you display them.
+
+Embedding models are not included in the default listing. Ask for them explicitly:
+
+```php
+foreach ($client->getModels('embedding') as $model) {
+    echo "{$model->id}: {$model->dimensions} dims"
+        . ($model->recommended ? ' (recommended)' : '')
+        . ($model->isDeprecated() ? " (deprecated {$model->deprecatedAt})" : '') . "\n";
+}
+
+// Or everything: $client->getModels('all');
+```
+
+### Embeddings
+
+```php
+$result = $client->embeddings('openai/text-embedding-3-small', [
+    'How do I reset my password?',
+    'Refund policy for annual plans',
+], [
+    'dimensions' => 512, // optional, only for models that support it
+    // 'timeout' => 180, // optional per-request timeout in seconds (default 120 for embeddings)
+]);
+
+$result->getModel();       // "openai/text-embedding-3-small" (always the concrete model)
+$result->getDimensions();  // 512 (actual vector length)
+$result->getEmbeddings();  // [0 => float[], 1 => float[]] keyed by input index
+$result->getEmbedding(0);  // float[] for the first input
+$result->getUsage()->cost; // credits charged
+$result->getRequestId();   // X-Request-Id, useful when contacting support
+```
+
+Inputs may be a single string or a list of 1-64 non-empty strings. Store the model ID and
+dimensions with every vector you keep: vectors from different models or dimensions are not
+comparable. Use the model marked `recommended` and rebuild your index when it changes or when
+your model gets a `deprecatedAt` date.
+
+Notes:
+
+- **Timeout:** `embeddings()` uses a 120 second request timeout unless you pass `'timeout'`
+  (the constructor's 30 second default is too short: the server waits up to 90 seconds for the
+  upstream provider on large batches).
+- **Strict responses:** the client throws `BlestaAiException` unless the response has exactly one
+  vector per input (1 for a string), is for exactly the model you requested, and every vector is
+  non-empty, numeric and of the same length (matching the reported `dimensions`, and the
+  `dimensions` you requested, if any).
+- **`input_type`** (`'query'` or `'document'`) is a reserved option: the server accepts it but
+  currently ignores it (it is not sent to the upstream provider), so there is no need to send it.
+- **Retries:** a request ID is not an idempotency key. If a request times out on your side and you
+  retry it, you may be billed for both.
+
 ### Check Credit Balance
 
 ```php
@@ -222,7 +277,7 @@ if ($response->rateLimit !== null) {
 
     // Check if approaching limit
     if ($response->rateLimit->isNearLimit(0.2)) {
-        echo "WARNING: Approaching rate limit (below 20%)!\n";
+        echo "⚠️ WARNING: Approaching rate limit (below 20%)!\n";
     }
 }
 ```
@@ -332,13 +387,40 @@ public function streamChatCompletion(
 - `$callback` - Function called for each chunk: `function(string $chunk, ?array $data): void`
 - `$options` - Same as `chatCompletion()`
 
+##### embeddings()
+
+Create embeddings (vectors) for one or more strings.
+
+```php
+public function embeddings(string $model, string|array $inputs, array $options = []): EmbeddingResponse
+```
+
+**Parameters:**
+- `$model` - A concrete embedding model (see `getModels('embedding')`); `blesta/*` aliases are rejected
+- `$inputs` - A string or a list of 1-64 non-empty strings
+- `$options` - `dimensions` (int), `input_type` (`'query'` or `'document'`; accepted by the server but
+  currently ignored), `timeout` (seconds, not sent to the API; defaults to 120 for this method,
+  `BlestaAiClient::DEFAULT_EMBEDDINGS_TIMEOUT`)
+
+**Returns:** `EmbeddingResponse`
+
+**Throws:** `AuthenticationException` (401), `InsufficientCreditsException` (402), `ValidationException` (422,
+e.g. not an embedding model, input too large, unsupported `dimensions`), `RateLimitException` (429, with
+`retryAfter` from the server or the upstream provider), `BlestaAiException` (anything else, including a
+malformed response: wrong vector count, a different model, empty/inconsistent vectors or a
+`dimensions` mismatch, including vectors whose length differs from the requested `dimensions`)
+
 ##### getModels()
 
 Get list of available models with pricing.
 
 ```php
-public function getModels(): array
+public function getModels(?string $type = null): array
 ```
+
+**Parameters:**
+- `$type` - Optional filter: `'embedding'`, `'chat'` or `'all'`. With no type the server returns chat
+  models and Blesta model aliases (the 1.0 behavior).
 
 **Returns:** Array of `Model` objects
 
@@ -397,7 +479,36 @@ readonly class Model
     public ?float $promptPrice;
     public ?float $completionPrice;
     public ?int $contextLength;
+    // Since 1.1.0 (null when the server does not report them)
+    public ?string $type;             // "chat" or "embedding"
+    public ?int $dimensions;          // embedding models: native vector length
+    public ?bool $supportsDimensions; // embedding models: reduced dimensions accepted
+    public ?string $deprecatedAt;     // embedding models: ISO 8601 date or null
+    public ?bool $recommended;        // embedding models: the recommended model
 
+    public function isEmbedding(): bool;
+    public function isDeprecated(): bool;
+    public function toArray(): array;
+}
+```
+
+#### EmbeddingResponse
+
+```php
+readonly class EmbeddingResponse
+{
+    public string $model;       // concrete model that produced the vectors
+    public int $dimensions;     // actual vector length
+    public array $embeddings;   // array<int, float[]> keyed and ordered by input index
+    public Usage $usage;
+    public ?string $requestId;  // X-Request-Id response header
+
+    public function getModel(): string;
+    public function getDimensions(): int;
+    public function getEmbeddings(): array;
+    public function getEmbedding(int $index): ?array;
+    public function getUsage(): Usage;
+    public function getRequestId(): ?string;
     public function toArray(): array;
 }
 ```
@@ -409,7 +520,11 @@ The `examples/` directory contains complete, runnable examples:
 - **`chat_completion.php`** - Basic non-streaming chat completion
 - **`streaming_chat.php`** - Real-time streaming response
 - **`list_models.php`** - List all available models with pricing
+- **`embeddings.php`** - Find the recommended embedding model, embed documents and a query, rank by cosine similarity
 - **`check_credits.php`** - Check your credit balance
+- **`ticket_confidence_check.php`** - AI ticket analysis with confidence scoring
+- **`tool_calling_ticket_system.php`** - Advanced tool/function calling for ticket automation
+- **`rate_limit_test.php`** - Rate limiting demonstration
 
 To run an example:
 
@@ -419,6 +534,12 @@ php chat_completion.php
 ```
 
 **Note:** Update the `$apiKey` variable in each example with your actual API key.
+
+### Advanced Features
+
+For advanced use cases, see these comprehensive guides:
+
+- **[Tool/Function Calling Guide](TOOL_CALLING.md)** - Learn how to use AI tool calling for autonomous ticket automation, spam detection, priority management, and more. Includes complete examples and best practices.
 
 ## Supported Models
 
@@ -447,8 +568,11 @@ php-client-library/
 │   │   └── ValidationException.php
 │   └── Models/
 │       ├── ChatCompletion.php
+│       ├── EmbeddingResponse.php
 │       ├── Model.php
+│       ├── RateLimit.php
 │       └── Usage.php
+├── tests/                           # PHPUnit tests (Guzzle MockHandler)
 ├── examples/                        # Usage examples
 ├── composer.json                    # Dependencies
 └── README.md                        # This file
@@ -459,6 +583,16 @@ php-client-library/
 ```bash
 cd php-client-library
 composer install
+```
+
+### Running Tests
+
+PHPUnit is a dev-only dependency (not installed for consumers of the package):
+
+```bash
+cd php-client-library
+composer install
+composer test        # or: vendor/bin/phpunit
 ```
 
 ## Use in Blesta
@@ -818,6 +952,15 @@ For issues, questions, or contributions, please visit:
 - **Blesta Support**: https://www.blesta.com/support/
 
 ## Changelog
+
+### Version 1.1.0
+
+- `embeddings()` and `Models\EmbeddingResponse`
+- `getModels(?string $type = null)` type filter
+- `Model` gains `type`, `dimensions`, `supportsDimensions`, `deprecatedAt`, `recommended`
+- `embeddings()` validates responses strictly and defaults to a 120 second timeout
+- Requires PHP 8.2+
+- Additive only: no breaking changes (see CHANGELOG.md)
 
 ### Version 1.0.0 (Initial Release)
 

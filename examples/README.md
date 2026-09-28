@@ -25,6 +25,13 @@ List all available AI models with pricing information.
 php list_models.php
 ```
 
+#### `embeddings.php`
+Find the recommended embedding model, embed a few documents and a query, and rank the
+documents by cosine similarity.
+```bash
+php embeddings.php
+```
+
 ### Chat Completion Examples
 
 #### `chat_completion.php`

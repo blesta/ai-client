@@ -97,8 +97,9 @@ class MyAiModule extends Module
                 $modelOptions[$model->id] = sprintf(
                     '%s (Prompt: $%s, Completion: $%s per 1K)',
                     $model->name,
-                    number_format($model->promptPrice, 6),
-                    number_format($model->completionPrice, 6)
+                    // Prices have up to 8 decimals (the exact billed rate)
+                    number_format($model->promptPrice, 8),
+                    number_format($model->completionPrice, 8)
                 );
             }
 
@@ -261,6 +262,73 @@ public function testConnection($apiKey)
     }
 }
 ```
+
+### 5. Embeddings (Knowledge Search / RAG)
+
+Available since `blesta/ai-client` 1.1.0. The server only turns text into vectors and bills
+for it; storing and searching the vectors happens in your Blesta database.
+
+```php
+use BlestaAi\Client\BlestaAiClient;
+use BlestaAi\Client\Exceptions\BlestaAiException;
+use BlestaAi\Client\Exceptions\InsufficientCreditsException;
+use BlestaAi\Client\Exceptions\ValidationException;
+
+$client = new BlestaAiClient($apiKey);
+
+// 1. Pick the recommended embedding model (not in the default getModels() listing)
+$model = null;
+foreach ($client->getModels('embedding') as $candidate) {
+    if ($candidate->recommended) {
+        $model = $candidate;
+    }
+}
+
+// 2. Embed documents in batches of up to 64 strings
+try {
+    // Uses a 120 s timeout by default (pass 'timeout' to change it).
+    $result = $client->embeddings($model->id, $chunks, [
+        'dimensions' => $model->supportsDimensions ? 512 : null,
+    ]);
+
+    foreach ($result->getEmbeddings() as $index => $vector) {
+        $this->Record->insert('knowledge_vectors', [
+            'chunk_id' => $chunkIds[$index],
+            'model' => $result->getModel(),          // always store the model...
+            'dimensions' => $result->getDimensions(), // ...and the dimensions
+            'vector' => pack('g*', ...$vector),       // e.g. float32 blob
+        ]);
+    }
+} catch (InsufficientCreditsException $e) {
+    // Pause indexing until credits are added
+} catch (ValidationException $e) {
+    // e.g. a chunk is too long (max 32,000 characters per item, 256,000 per request)
+    Log::error('Embedding validation failed', $e->getErrors());
+} catch (BlestaAiException $e) {
+    // Retry later; log $e->getMessage()
+}
+
+// 3. At query time, embed the question with the SAME model and dimensions
+$query = $client->embeddings($model->id, $question, ['dimensions' => 512]);
+$queryVector = $query->getEmbedding(0);
+// ...then compare against stored vectors with cosine similarity
+```
+
+Rules for stored vectors:
+
+- Only compare vectors produced by the same `model` **and** `dimensions`.
+- Never use a `blesta/*` alias for embeddings (the server rejects them).
+- When the recommended model changes, or your model gets a `deprecatedAt` date, build a new
+  index with the new model in the background and switch over when it is complete.
+- Embedding calls have their own rate-limit bucket, so indexing does not use up the chat quota.
+  Handle `RateLimitException` by waiting `$e->retryAfter` seconds (the server forwards the
+  upstream provider's Retry-After when it is the provider that is rate limiting).
+- `input_type` (`'query'`/`'document'`) is accepted by the server but currently ignored, so there
+  is no need to send it.
+- `embeddings()` throws `BlestaAiException` if the response does not contain exactly one vector
+  per input for the model you requested; nothing partial is ever returned.
+- A request ID is not an idempotency key: if a request times out on your side and you retry it,
+  you may be billed twice. Prefer a generous timeout (the default is 120 seconds) over retries.
 
 ## Best Practices
 

@@ -20,3 +20,7 @@
 # OS
 .DS_Store
 Thumbs.db
+# Test output
+/.phpunit.cache/
+.phpunit.result.cache
+phpunit.xml
